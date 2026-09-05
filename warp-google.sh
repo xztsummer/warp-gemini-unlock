@@ -35,22 +35,39 @@ DEFAULT_IFACE=$(ip route show default 2>/dev/null | awk '{print $5}' | head -n 1
 auto_clean_old_warp() {
     echo -e "${YELLOW}[深度清理] 正在深度检测并彻底清除所有 WARP 策略路由、防火墙规则及旧版残留...${NC}"
     
-    # 1. 解除 resolv.conf 写保护并恢复纯净原生 DNS
+    # 0. 向 Cloudflare 释放旧设备注册 (解绑旧 IP 绑定)
+    if [ -f /etc/wireguard/warp-account.conf ]; then
+        local OLD_ID OLD_TOKEN
+        OLD_ID=$(awk -F= '/^DEV_ID=/{print $2}' /etc/wireguard/warp-account.conf 2>/dev/null)
+        OLD_TOKEN=$(awk -F= '/^TOKEN=/{print $2}' /etc/wireguard/warp-account.conf 2>/dev/null)
+        if [ -n "$OLD_ID" ] && [ -n "$OLD_TOKEN" ]; then
+            curl -4 -s -m 3 -X DELETE -H "Authorization: Bearer $OLD_TOKEN" "https://api.cloudflareclient.com/v0a2158/reg/$OLD_ID" >/dev/null 2>&1 || true
+        fi
+    fi
+
+    # 1. 解除 resolv.conf 写保护并优先恢复原生备份 DNS
     chattr -i /etc/resolv.conf 2>/dev/null || true
-    cat > /etc/resolv.conf << 'EOF'
+    if [ -s /etc/resolv.conf.warp.bak ]; then
+        cp -f /etc/resolv.conf.warp.bak /etc/resolv.conf
+        rm -f /etc/resolv.conf.warp.bak
+    else
+        cat > /etc/resolv.conf << 'EOF'
 nameserver 8.8.8.8
 nameserver 1.1.1.1
 EOF
+    fi
 
     # 2. 停止并禁用所有相关 systemd 服务
     systemctl stop warp-unlock.service warp-svc cloudflare-warp dnsmasq 2>/dev/null || true
     systemctl disable warp-unlock.service warp-svc cloudflare-warp 2>/dev/null || true
     
-    # 3. 停止 WireGuard 接口
+    # 3. 停止 WireGuard 接口并强制从内核拔除 warp0 网卡设备
     command -v wg-quick &>/dev/null && wg-quick down warp0 2>/dev/null || true
     command -v warp-cli &>/dev/null && warp-cli disconnect 2>/dev/null || true
+    ip link set dev warp0 down 2>/dev/null || true
+    ip link del dev warp0 2>/dev/null || true
 
-    # 4. 彻底循环清理所有 iptables mangle / nat / filter 规则 (while 循环清空，一条不剩)
+    # 4. 彻底循环清理所有 IPv4 与 IPv6 iptables / ip6tables 规则 (一条不剩)
     while iptables -t mangle -D OUTPUT -m set --match-set warp_unlock dst -j MARK --set-mark 51820 2>/dev/null; do :; done
     while iptables -t mangle -D PREROUTING -m set --match-set warp_unlock dst -j MARK --set-mark 51820 2>/dev/null; do :; done
     while iptables -t mangle -D POSTROUTING -p tcp --tcp-flags SYN,RST SYN -o warp0 -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null; do :; done
@@ -63,22 +80,39 @@ EOF
     while iptables -t filter -D FORWARD -p udp --dport 443 -m set --match-set warp_unlock dst -j REJECT --reject-with icmp-port-unreachable 2>/dev/null; do :; done
     while iptables -t filter -D OUTPUT -p udp --dport 443 -m set --match-set warp_unlock dst -j REJECT --reject-with icmp-port-unreachable 2>/dev/null; do :; done
 
-    # 5. 彻底循环清理策略路由表与规则
+    # 清理 IPv6 ip6tables
+    while ip6tables -t mangle -D OUTPUT -m set --match-set warp_unlock6 dst -j MARK --set-mark 51820 2>/dev/null; do :; done
+    while ip6tables -t mangle -D PREROUTING -m set --match-set warp_unlock6 dst -j MARK --set-mark 51820 2>/dev/null; do :; done
+    while ip6tables -t nat -D POSTROUTING -o warp0 -j MASQUERADE 2>/dev/null; do :; done
+    while ip6tables -t filter -D FORWARD -p udp --dport 443 -m set --match-set warp_unlock6 dst -j REJECT --reject-with icmp-port-unreachable 2>/dev/null; do :; done
+    while ip6tables -t filter -D OUTPUT -p udp --dport 443 -m set --match-set warp_unlock6 dst -j REJECT --reject-with icmp-port-unreachable 2>/dev/null; do :; done
+
+    # 5. 彻底循环清理 IPv4 与 IPv6 策略路由表与规则
     while ip rule del fwmark 51820 lookup 51820 2>/dev/null; do :; done
+    while ip -6 rule del fwmark 51820 lookup 51820 2>/dev/null; do :; done
     ip route flush table 51820 2>/dev/null || true
+    ip -6 route flush table 51820 2>/dev/null || true
 
-    # 6. 销毁 ipset 集合
+    # 6. 销毁 IPv4 与 IPv6 ipset 集合
     ipset destroy warp_unlock 2>/dev/null || true
+    ipset destroy warp_unlock6 2>/dev/null || true
 
-    # 7. 清除配置文件与启动脚本，还原 wg-quick 并清理 wireguard-go
+    # 7. 清除所有配置文件、启动脚本、账号缓存及临时扫描脚本
     rm -f /etc/dnsmasq.d/warp_unlock.conf \
           /etc/dnsmasq.d/warp-google.conf \
+          /etc/dnsmasq.d/warp*.conf \
           /usr/local/bin/warp-route-apply.sh \
           /usr/local/bin/wgcf \
           /etc/systemd/system/warp-unlock.service \
-          /etc/wireguard/warp0.conf \
+          /etc/wireguard/warp0.conf* \
+          /etc/wireguard/warp-account.conf* \
+          /etc/wireguard/warp.conf* \
           /usr/bin/wireguard-go \
-          /etc/warp-unlock/wgcf-profile.conf 2>/dev/null || true
+          /etc/warp-unlock/wgcf-profile.conf \
+          /tmp/auto_warp*.sh \
+          /tmp/scan_us*.sh \
+          /tmp/best_endpoint \
+          /tmp/warp* 2>/dev/null || true
 
     if [ -f /usr/bin/wg-quick ]; then
         sed -i '/wireguard-go/d; s/^#\s*add_if/add_if/' /usr/bin/wg-quick 2>/dev/null || true
@@ -218,10 +252,17 @@ setup_warp_profile() {
     local PUBKEY
     PUBKEY=$(echo "$PRIVKEY" | wg pubkey 2>/dev/null)
 
-    # 强制 -4 IPv4 请求 Cloudflare 注册 API (指定 en_US 语言)
+    # 生成全新的随机设备指纹 (22 位随机 INSTALL_ID 与 134 位随机 FCM_TOKEN)
+    local INSTALL_ID FCM_TOKEN
+    INSTALL_ID=$(head -c 16 /dev/urandom | base32 2>/dev/null | tr '[:upper:]' '[:lower:]' | head -c 22)
+    [ -z "$INSTALL_ID" ] && INSTALL_ID=$(tr -dc 'a-z0-9' </dev/urandom | head -c 22)
+    FCM_TOKEN="${INSTALL_ID}:APA91b$(head -c 96 /dev/urandom | base32 2>/dev/null | tr '[:upper:]' '[:lower:]' | head -c 134)"
+    [ -z "$FCM_TOKEN" ] && FCM_TOKEN="${INSTALL_ID}:APA91b$(tr -dc 'a-z0-9' </dev/urandom | head -c 134)"
+
+    # 强制 -4 IPv4 请求 Cloudflare 注册 API (指定 en_US 语言并附带独立随机设备指纹)
     local RESPONSE
     RESPONSE=$(curl -4 -s -X POST -H 'User-Agent: okhttp/3.12.1' -H 'CF-Client-Version: a-6.3-2158' -H 'Content-Type: application/json' \
-      -d "{\"key\":\"$PUBKEY\",\"install_id\":\"\",\"fcm_token\":\"\",\"tos\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"model\":\"PC\",\"serial_number\":\"\",\"locale\":\"en_US\"}" \
+      -d "{\"key\":\"$PUBKEY\",\"install_id\":\"$INSTALL_ID\",\"fcm_token\":\"$FCM_TOKEN\",\"tos\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"model\":\"PC\",\"serial_number\":\"$INSTALL_ID\",\"locale\":\"en_US\"}" \
       https://api.cloudflareclient.com/v0a2158/reg)
 
     # Cloudflare WARP 客户端内网 IPv4 规范恒为 172.16.0.2 (杜绝单行 JSON 抓错 endpoint 公网 IP)
@@ -254,7 +295,7 @@ setup_warp_profile() {
         exit 1
     fi
 
-    # 终极修复: 激活 Cloudflare WARP 官方账号授权 (warp_enabled: true)
+    # 终极修复: 激活 Cloudflare WARP 官方账号授权 (warp_enabled: true) 并固化凭证
     local DEV_ID
     DEV_ID=$(echo "$RESPONSE" | grep -oP '"id"\s*:\s*"\K[^"]+' | head -n 1)
     local TOKEN
@@ -269,6 +310,12 @@ setup_warp_profile() {
         if echo "$PATCH_RES" | grep -q '"warp_enabled":\s*true'; then
             echo -e "${GREEN}✓ Cloudflare WARP 官方授权已成功激活 (warp_enabled: true)${NC}"
         fi
+
+        # 固化账号元数据以供注销释放旧设备使用
+        cat > /etc/wireguard/warp-account.conf << EOF
+DEV_ID=$DEV_ID
+TOKEN=$TOKEN
+EOF
     fi
 
     # 显式设置 MTU=1200 杜绝大包分片断网，Keepalive=10 彻底稳固 NAT 映射
@@ -524,6 +571,108 @@ EOF
 }
 
 # ---------------------------------------------------------
+# 核心功能：全自动注销并获取新账号以真正更换出口 IP
+# ---------------------------------------------------------
+refresh_warp_ip() {
+    echo -e "\n${CYAN}>>> 正在执行 WARP 出口 IP 深度换新 (注销旧设备 -> 注入随机指纹 -> 获取全新出口 IP)...${NC}"
+    
+    local OLD_IP
+    OLD_IP=$(curl -s --interface warp0 --max-time 4 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep "^ip=" | cut -d= -f2)
+    [ -n "$OLD_IP" ] && echo -e "当前旧出口 IP: ${YELLOW}${OLD_IP}${NC}"
+
+    # 1. 停用当前 WireGuard 接口
+    wg-quick down warp0 >/dev/null 2>&1 || true
+
+    # 2. 向 Cloudflare 官方 API 发送 DELETE 注销旧设备，彻底释放旧 IP 映射
+    if [ -f /etc/wireguard/warp-account.conf ]; then
+        local OLD_ID OLD_TOKEN
+        OLD_ID=$(awk -F= '/^DEV_ID=/{print $2}' /etc/wireguard/warp-account.conf 2>/dev/null)
+        OLD_TOKEN=$(awk -F= '/^TOKEN=/{print $2}' /etc/wireguard/warp-account.conf 2>/dev/null)
+        if [ -n "$OLD_ID" ] && [ -n "$OLD_TOKEN" ]; then
+            echo -e "${YELLOW}正在向 Cloudflare 注销旧设备 (${OLD_ID:0:8}...) 释放旧 IP 映射...${NC}"
+            curl -4 -s -m 4 -X DELETE -H "Authorization: Bearer $OLD_TOKEN" "https://api.cloudflareclient.com/v0a2158/reg/$OLD_ID" >/dev/null 2>&1 || true
+            sleep 2
+        fi
+    fi
+
+    # 3. 生成全新私钥公钥
+    local PRIVKEY PUBKEY
+    PRIVKEY=$(wg genkey 2>/dev/null || openssl rand -base64 32)
+    PUBKEY=$(echo "$PRIVKEY" | wg pubkey 2>/dev/null)
+
+    # 4. 生成全新的随机设备指纹 (22 位随机 INSTALL_ID 与 134 位随机 FCM_TOKEN)
+    local INSTALL_ID FCM_TOKEN
+    INSTALL_ID=$(head -c 16 /dev/urandom | base32 2>/dev/null | tr '[:upper:]' '[:lower:]' | head -c 22)
+    [ -z "$INSTALL_ID" ] && INSTALL_ID=$(tr -dc 'a-z0-9' </dev/urandom | head -c 22)
+    FCM_TOKEN="${INSTALL_ID}:APA91b$(head -c 96 /dev/urandom | base32 2>/dev/null | tr '[:upper:]' '[:lower:]' | head -c 134)"
+    [ -z "$FCM_TOKEN" ] && FCM_TOKEN="${INSTALL_ID}:APA91b$(tr -dc 'a-z0-9' </dev/urandom | head -c 134)"
+
+    # 5. 请求 Cloudflare 注册全新账号 (轮换接入点，双重确保分配新 IP)
+    local ep_idx=$(( RANDOM % ${#WARP_ENDPOINTS[@]} ))
+    local TARGET_EP=${WARP_ENDPOINTS[$ep_idx]}
+
+    local REG_RES
+    REG_RES=$(curl -4 -s -X POST -H 'User-Agent: okhttp/3.12.1' -H 'CF-Client-Version: a-6.3-2158' -H 'Content-Type: application/json' \
+      -d "{\"key\":\"$PUBKEY\",\"install_id\":\"$INSTALL_ID\",\"fcm_token\":\"$FCM_TOKEN\",\"tos\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"model\":\"PC\",\"serial_number\":\"$INSTALL_ID\",\"locale\":\"en_US\"}" \
+      https://api.cloudflareclient.com/v0a2158/reg 2>/dev/null)
+
+    local NEW_DEV_ID NEW_TOKEN IPV6_ADDR PEER_PUBKEY
+    NEW_DEV_ID=$(echo "$REG_RES" | grep -oP '"id"\s*:\s*"\K[^"]+' | head -n 1)
+    NEW_TOKEN=$(echo "$REG_RES" | grep -oP '"token"\s*:\s*"\K[^"]+' | head -n 1)
+    IPV6_ADDR=$(python3 -c "import sys, json; print(json.loads(sys.stdin.read()).get('config',{}).get('interface',{}).get('addresses',{}).get('v6',''))" <<< "$REG_RES" 2>/dev/null)
+    [ -z "$IPV6_ADDR" ] && IPV6_ADDR=$(echo "$REG_RES" | grep -oP '"addresses"\s*:\s*\{[^}]*"v6"\s*:\s*"\K[0-9a-fA-F:]+' | head -n 1)
+    IPV6_ADDR=${IPV6_ADDR:-2606:4700:110:8827:18b5:2de8:8b53:96e3}
+    PEER_PUBKEY=$(echo "$REG_RES" | grep -oP '"public_key"\s*:\s*"\K[^"]+' | head -n 1)
+    PEER_PUBKEY=${PEER_PUBKEY:-bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=}
+
+    # 6. 激活新账号授权
+    if [ -n "$NEW_DEV_ID" ] && [ -n "$NEW_TOKEN" ]; then
+        curl -4 -s -X PATCH -H 'User-Agent: okhttp/3.12.1' -H 'CF-Client-Version: a-6.3-2158' -H 'Content-Type: application/json' \
+          -H "Authorization: Bearer $NEW_TOKEN" \
+          -d '{"warp_enabled":true}' \
+          "https://api.cloudflareclient.com/v0a2158/reg/$NEW_DEV_ID" >/dev/null 2>&1 || true
+
+        # 固化新账号元数据
+        cat > /etc/wireguard/warp-account.conf << EOF
+DEV_ID=$NEW_DEV_ID
+TOKEN=$NEW_TOKEN
+EOF
+    fi
+
+    # 7. 更新 /etc/wireguard/warp0.conf
+    sed -i "s|PrivateKey = .*|PrivateKey = $PRIVKEY|" /etc/wireguard/warp0.conf
+    sed -i "s|Address = .*|Address = 172.16.0.2/32, ${IPV6_ADDR}/128|" /etc/wireguard/warp0.conf
+    [ -n "$PEER_PUBKEY" ] && sed -i "s|PublicKey = .*|PublicKey = $PEER_PUBKEY|" /etc/wireguard/warp0.conf
+    sed -i "s|Endpoint = .*|Endpoint = $TARGET_EP|" /etc/wireguard/warp0.conf
+
+    # 8. 重新拉起 WireGuard 接口
+    wg-quick up warp0 >/dev/null 2>&1
+    sleep 3
+
+    # 9. 验收全新出口 IP 与地区归属
+    local NEW_TRACE NEW_IP NEW_LOC NEW_GLOC
+    NEW_TRACE=$(curl -s --interface warp0 --max-time 5 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null)
+    NEW_IP=$(echo "$NEW_TRACE" | grep "^ip=" | cut -d= -f2)
+    NEW_LOC=$(echo "$NEW_TRACE" | grep "^loc=" | cut -d= -f2)
+    NEW_GLOC=$(curl -sL --interface warp0 --max-time 5 -H "Accept-Language: en-US,en" https://www.google.com 2>/dev/null | grep -oP '\[1,null,null,\d+,\d+,"\K[A-Z]{3}' | head -n 1)
+
+    echo "--------------------------------------------------------"
+    echo -e "刷新前旧出口 IP: ${YELLOW}${OLD_IP:-未知}${NC}"
+    echo -e "刷新后新出口 IP: ${GREEN}${NEW_IP:-未知}${NC}"
+    echo -e "新出口地区代码:  [${GREEN}${NEW_LOC:-未知}${NC}]"
+    echo -e "Google 真实定位: [${GREEN}${NEW_GLOC:-未知}${NC}]"
+    echo "--------------------------------------------------------"
+
+    if [ -n "$NEW_IP" ] && [ "$NEW_IP" != "$OLD_IP" ]; then
+        echo -e "${GREEN}✓ 出口 IP 刷新成功！已成功切换至全新公网出口！${NC}"
+        return 0
+    else
+        echo -e "${YELLOW}✓ 账号已重新轮换建立 (出口 IP: ${NEW_IP:-未知})${NC}"
+        return 0
+    fi
+}
+
+# ---------------------------------------------------------
 # 核心功能：全自动刷 IP 机制 (避开俄罗斯 RU 与中国 CN，锁定美区)
 # ---------------------------------------------------------
 ensure_clean_warp_region() {
@@ -531,7 +680,6 @@ ensure_clean_warp_region() {
     
     local max_retries=6
     local retry_count=0
-    local ep_count=${#WARP_ENDPOINTS[@]}
 
     while [ $retry_count -lt $max_retries ]; do
         sleep 2
@@ -569,13 +717,9 @@ ensure_clean_warp_region() {
 
         if [ $IS_RESTRICTED -eq 1 ]; then
             ((retry_count++))
-            echo -e "${YELLOW}[尝试 $retry_count/$max_retries] 当前出口为受限区，正在热切换接入点刷新 IP...${NC}"
-            
-            # 选择下一个黄金 Endpoint 并热切换
-            local next_ep=${WARP_ENDPOINTS[$((retry_count % ep_count))]}
-            wg set warp0 peer bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo= endpoint "$next_ep" 2>/dev/null || true
-            sed -i "s|Endpoint = .*|Endpoint = $next_ep|" /etc/wireguard/warp0.conf
-            sleep 3
+            echo -e "${YELLOW}[尝试 $retry_count/$max_retries] 当前出口为受限区，正在深度换新账号注销旧 IP...${NC}"
+            refresh_warp_ip
+            sleep 2
         else
             echo -e "${GREEN}✓ 成功锁定 WARP 纯净出口 IP: ${WARP_IP} (地区: [${CF_LOC:-${CUR_REGION:-US}}]，完美支持 Google / Gemini / YouTube！)${NC}"
             return 0
@@ -761,6 +905,7 @@ case $choice in
         echo -e "${GREEN}✓ 已彻底卸载并恢复原生网络配置。${NC}"
         ;;
     5)
+        refresh_warp_ip
         ensure_clean_warp_region
         test_unlock_status
         ;;
