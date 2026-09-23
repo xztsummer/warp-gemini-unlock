@@ -8,6 +8,8 @@
 
 面向 Linux VPS 的 **Google 搜索 / Google AI 精准分流解锁脚本**。它使用 Cloudflare 官方客户端的 **MASQUE（QUIC over 443）本地 SOCKS5 代理**，配合 **sing-box** 的域名规则，只把 Google 搜索与 Google AI 相关域名送进 WARP，其余流量保持 VPS 原生直连。
 
+很多 VPS 的 IPv4 地址会被 Google 直接判定为受限地区，换机房、换 IP 或常规 WireGuard 方案往往都解决不了。本项目借助 Cloudflare WARP 边缘提供的 **IPv6 出口**：即使 VPS 只有 IPv4，Google 看到的也是一个干净的 IPv6 地址，从而绕开 IPv4 段的地区锁定。
+
 不把所有流量塞进 WARP 是刻意的取舍：YouTube、Google Play 独立 CDN、ChatGPT、Claude 与普通外网访问继续走原生网络，解锁的同时不牺牲速度与延迟。
 
 安装、切换、验收、回滚全自动：改动前先备份，配置先过语法检查再重启，端到端验收失败自动恢复原状。
@@ -16,6 +18,7 @@
 
 ## ✨ 核心特性
 
+- 🌍 **IPv4 机房也能拿到 IPv6 出口**：出口协议族由 Cloudflare 在隧道内部决定，本项目借助官方客户端的 MASQUE 隧道，让只有 IPv4 的 VPS 也能以 IPv6 出口访问 Google，绕开被 Google 锁定的 IPv4 段。这是本项目与常见方案最大的差别，实测记录见「兼容性与验证」。
 - 🎯 **最小域名集合**：只分流 Google 搜索/核心基础与 Google AI 的根域名，其余域名一律直连。
 - ⚡ **MASQUE 出口更干净**：官方客户端走 443 端口的 QUIC 通道，由 Cloudflare 自行调度边缘与会话，比依赖固定 Anycast 接入点的 WireGuard 类方案更容易落到 Google 判定为干净的出口池。
 - 🧠 **拒绝“HTTP 200 即解锁”**：同时校验 `warp=on`、Google 页面内部地区码（不能是 `CHN` / `HKG`）、Gemini 与 AI Studio 的地区限制文案，四项全过才算成功。
@@ -44,6 +47,8 @@
 1. 安装官方 `cloudflare-warp` 客户端，切换为 **MASQUE + 仅监听本机的 SOCKS5 代理**模式。
 2. 按「验收标准」筛选出口，合格后写入 sing-box。
 3. sing-box 新增一条 `warp-masque` 出站和一条域名分流规则：域名命中走 WARP，其余照旧。
+
+出口协议族（IPv4 / IPv6）由 Cloudflare 在隧道内部决定，客户端无法指定，脚本会在验收行里显示实际出口族。实测在一台没有原生 IPv6 的 VPS 上，WARP 出口为 IPv6。
 
 ---
 
@@ -139,7 +144,7 @@ sing-box 使用**根域名后缀规则**，命中某个根域名后，它的所�
 | 业务矩阵 | 覆盖范围 | 包含的根域名（下级子域名自动生效） |
 | :--- | :--- | :--- |
 | **Google 搜索与核心基础** | 搜索主站、前端静态资源、API 总线、CDN 与骨干节点；`google.com` 同时覆盖 `gemini.google.com`、`aistudio.google.com`、`bard.google.com` 等子域 | `google.com`<br>`googleapis.com`<br>`googleusercontent.com`<br>`gstatic.com`<br>`1e100.net`<br>`google-analytics.com`<br>`googletagmanager.com`<br>`goo.gl`<br>`google.dev`<br>`web.dev`<br>`chrome.com` |
-| **亚太防跳转域名** | 送中时 Google 常把请求改址到这些地区站，一并分流可避免跳转后落回受限地区 | `google.co.jp`<br>`google.com.hk`<br>`google.com.tw`<br>`google.cn` |
+| **亚太防跳转域名** | 出口被判定为受限地区时，Google 常把请求改址到这些地区站；一并分流可避免跳转后落回受限地区 | `google.co.jp`<br>`google.com.hk`<br>`google.com.tw`<br>`google.cn` |
 | **Google AI 与 DeepMind** | Gemini 生态工具、NotebookLM、Generative AI 入口与 DeepMind 独立域名 | `antigravity.google`<br>`notebooklm.google`<br>`generativeai.google`<br>`deepmind.com`<br>`deepmind.google` |
 | **验收期临时域名** | 只在安装 / 接入阶段临时加入，用于确认请求确实走到 WARP，验收通过后自动移除 | `www.cloudflare.com` |
 | **不纳入分流** | 保持 VPS 原生直连 | `youtube.com`<br>`googlevideo.com`<br>`ytimg.com`<br>`gvt1.com`<br>`ggpht.com`<br>`chatgpt.com`<br>`openai.com`<br>`claude.ai`<br>`anthropic.com` |
@@ -278,9 +283,13 @@ bash /root/warp-geimini-masque.sh restore /root/warp-google-masque-backup-YYYYMM
 
 `cdn-cgi/trace` 的 `loc` 是 Cloudflare 自己的判断，不代表 Google 也把这个出口认作美国。脚本因此不看 `loc`，而是校验 Google 页面内部地区码与 Gemini / AI Studio 的地区限制文案。在菜单选择 **`[2]`**，脚本会断线重连换出口，直到四项验收全部通过或达到重试上限。
 
-### Q: 送中了 / 出口不合格怎么办？
+### Q: 为什么 IPv6 出口能绕开地区锁定？
 
-同样是菜单 **`[2]`**。刷新是保留官方注册的重连换 IP，不会删除你的设备；只有首次安装时本次新建且未通过验收的候选注册才会被注销。想加大尝试次数：`WARP_MAX_RETRIES=20 bash warp-geimini-masque.sh refresh`（上限 30）。
+Google 判定地区看的是访问出口 IP：很多机房的 IPv4 段被判定在受限地区，而 WARP 边缘给出的出口是 IPv6，Google 看到的就是一个干净的 IPv6 地址。出口协议族由 Cloudflare 在隧道内部决定、客户端无法指定，脚本会在验收行里显示实际出口族。
+
+### Q: 遇到 Gemini 地区锁定（提示当前地区不可用）怎么办？
+
+在菜单选择 **`[2]`**。刷新是保留官方注册的重连换 IP，不会删除你的设备；只有首次安装时本次新建且未通过验收的候选注册才会被注销。想加大尝试次数：`WARP_MAX_RETRIES=20 bash warp-geimini-masque.sh refresh`（上限 30）。
 
 ### Q: 为什么不把 YouTube、Google Play、ChatGPT、Claude 一起送进 WARP？
 
@@ -339,10 +348,12 @@ Cloudflare 官方客户端的本地 SOCKS5 代理不支持 UDP ASSOCIATE（实�
 | 项目 | 版本 / 说明 |
 | :--- | :--- |
 | 系统 | Ubuntu 24.04.3 x86_64 |
+| VPS 原生网络 | 仅 IPv4：无全局 IPv6 地址、无 IPv6 默认路由，`curl -6` 直连失败 |
 | sing-box | 1.14.1，由 sing-box-yg 安装（`/etc/s-box/sb.json`、`/etc/s-box/sing-box`、`sing-box.service`） |
 | Cloudflare 客户端 | warp-cli 2026.7.1377.0 |
 
 - **安装与重复安装**均通过四项验收，典型输出：`出口族: IPv6 | WARP: on | CF: US | Google: USA | Google HTTP: 200 | Gemini: 200/block=0 | AI Studio: 200/block=0`。
+- **IPv6 出口**：这台 VPS 自身没有原生 IPv6，经 MASQUE 的出口是 IPv6（`warp=on`）；强制 IPv4 探测时会拿到另一个 WARP IPv4 出口，说明出口协议族由 Cloudflare 决定。
 - **生产链路生效**：sing-box 日志中 `google.com`、`gemini.google.com`、`aistudio.google.com` 的请求均由 `outbound/socks[warp-masque]` 发出。
 - **无副作用**：`sing-box check` 通过、服务保持 active、原有入站与规则未被改动、临时健康检查入口已删除、VPS 原生出口仍为本机 IP（`warp=off`）。
 - **未覆盖**：登录态下的 Gemini 浏览器界面，以及 QUIC / UDP 路径（见 FAQ）。
