@@ -1,4 +1,4 @@
-# 🚀 warp-google-unlock — VPS Google / Gemini 精准 WARP 分流解锁脚本
+# 🚀 warp-gemini-unlock — VPS Google / Gemini 精准 WARP 分流解锁脚本
 
 <!-- 徽章为本地副本，避免外链依赖；重新生成时取 img.shields.io/badge/ 下同名参数：
      platform-Debian|Ubuntu|RHEL|CentOS-orange、Cloudflare-WARP-f38020、
@@ -12,7 +12,7 @@
 
 不把所有流量塞进 WARP 是刻意取舍：YouTube、Google Play 独立 CDN、ChatGPT、Claude 与普通外网访问保持原生直连，解锁的同时不牺牲速度与延迟。
 
-项目名称 `warp-google-unlock`，仓库：[github.com/xztsummer/warp-google-unlock](https://github.com/xztsummer/warp-google-unlock)。全仓库只维护一个脚本 `warp-geimini-masque.sh`：Cloudflare 官方客户端 + MASQUE 本地 SOCKS5 + 自动接入 sing-box，同时提供交互式菜单与命令行子命令。
+项目名称 `warp-gemini-unlock`，仓库：[github.com/xztsummer/warp-gemini-unlock](https://github.com/xztsummer/warp-gemini-unlock)。全仓库只维护一个脚本 `warp-geimini-masque.sh`：Cloudflare 官方客户端 + MASQUE 本地 SOCKS5 + 自动接入 sing-box，同时提供交互式菜单与命令行子命令。
 
 ---
 
@@ -34,14 +34,14 @@
 **方式一：一键命令**
 
 ```bash
-bash <(curl -sL https://raw.githubusercontent.com/xztsummer/warp-google-unlock/main/warp-geimini-masque.sh)
+bash <(curl -sL https://raw.githubusercontent.com/xztsummer/warp-gemini-unlock/main/warp-geimini-masque.sh)
 ```
 
-**方式二：克隆 `warp-google-unlock` 仓库后上传**（本次实测用的就是这种方式，见文末「实测记录」）
+**方式二：克隆 `warp-gemini-unlock` 仓库后上传**（本次实测用的就是这种方式，见文末「实测记录」）
 
 ```bash
-git clone https://github.com/xztsummer/warp-google-unlock.git
-cd warp-google-unlock
+git clone https://github.com/xztsummer/warp-gemini-unlock.git
+cd warp-gemini-unlock
 
 scp -P 22 ./warp-geimini-masque.sh root@YOUR_VPS:/root/
 ssh -p 22 root@YOUR_VPS 'bash /root/warp-geimini-masque.sh install'
