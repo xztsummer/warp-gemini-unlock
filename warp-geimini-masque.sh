@@ -1,5 +1,5 @@
 #!/bin/bash
-# Cloudflare 官方 MASQUE + sing-box Google/Gemini 精准分流安装器
+# Cloudflare 官方 MASQUE + sing-box Google/Gemini/Claude/Muse AI 精准分流安装器
 #
 # 直接运行进入交互菜单；自动化场景也可使用子命令：
 #   sudo bash warp-geimini-masque.sh install          # 安装/修复并接入 sing-box
@@ -32,7 +32,8 @@ SINGBOX_CONFIG="${SINGBOX_CONFIG:-}"
 WARP_ALLOW_RECONFIGURE_EXISTING="${WARP_ALLOW_RECONFIGURE_EXISTING:-0}"
 BACKUP_DIR=""
 
-# 只把 Google 搜索/基础服务与 Google AI 交给 MASQUE。根域名规则会覆盖其子域名。
+# 把 Google 搜索/基础服务、Google AI、Claude/Anthropic 与 Muse AI 交给 MASQUE。
+# 根域名规则会覆盖其子域名。
 
 TARGET_DOMAINS_JSON='[
   "google.com",
@@ -54,7 +55,10 @@ TARGET_DOMAINS_JSON='[
   "deepmind.com",
   "deepmind.google",
   "notebooklm.google",
-  "generativeai.google"
+  "generativeai.google",
+  "claude.ai",
+  "anthropic.com",
+  "muse.ai"
 ]'
 
 log_info() { echo -e "${CYAN}$*${NC}"; }
@@ -557,7 +561,7 @@ integrate_singbox() {
         return 1
     fi
 
-    log_ok "已将 Google 搜索/核心基础与 Google AI 域名接入 MASQUE；临时测试入口已删除。"
+    log_ok "已将 Google 搜索/核心基础、Google AI、Claude/Anthropic 与 Muse AI 域名接入 MASQUE；临时测试入口已删除。"
 }
 
 # ---------------------------------------------------------
@@ -838,7 +842,7 @@ main_menu() {
     while true; do
         clear 2>/dev/null || true
         echo -e "${CYAN}╔══════════════════════════════════════════════════════════╗${NC}"
-        echo -e "${CYAN}║       Cloudflare WARP MASQUE · Google/Gemini 管理       ║${NC}"
+        echo -e "${CYAN}║       Cloudflare WARP MASQUE · 精准域名分流管理       ║${NC}"
         echo -e "${CYAN}╚══════════════════════════════════════════════════════════╝${NC}"
         echo "1. 智能安装 / 修复 MASQUE 与 sing-box 分流"
         echo "2. 保留注册，刷新 MASQUE 出口并严格验收"

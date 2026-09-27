@@ -1,4 +1,4 @@
-# 🚀 VPS Google / Gemini 精准 WARP 分流解锁脚本
+# 🚀 VPS Google / Gemini / Claude / Muse AI 精准 WARP 分流脚本
 
 <!-- 徽章为本地 SVG 副本，避免外链依赖 -->
 ![Platform](assets/badges/platform.svg)
@@ -6,11 +6,11 @@
 ![Tunnel](assets/badges/tunnel-masque-quic.svg)
 [![Router](assets/badges/routing-sing-box.svg)](https://github.com/SagerNet/sing-box)
 
-面向 Linux VPS 的 **Google 搜索 / Google AI 精准分流解锁脚本**。它使用 Cloudflare 官方客户端的 **MASQUE（QUIC over 443）本地 SOCKS5 代理**，配合 **sing-box** 的域名规则，只把 Google 搜索与 Google AI 相关域名送进 WARP，其余流量保持 VPS 原生直连。
+面向 Linux VPS 的 **Google 搜索、Google AI、Claude/Anthropic 与 Muse AI 精准分流脚本**。它使用 Cloudflare 官方客户端的 **MASQUE（QUIC over 443）本地 SOCKS5 代理**，配合 **sing-box** 的域名规则，只把列出的目标域名送进 WARP，其余流量保持 VPS 原生直连。
 
 很多 VPS 的 IPv4 地址会被 Google 直接判定为受限地区，换机房、换 IP 或常规 WireGuard 方案往往都解决不了。本项目借助 Cloudflare WARP 边缘提供的 **IPv6 出口**：即使 VPS 只有 IPv4，Google 看到的也是一个干净的 IPv6 地址，从而绕开 IPv4 段的地区锁定。
 
-不把所有流量塞进 WARP 是刻意的取舍：YouTube、Google Play 独立 CDN、ChatGPT、Claude 与普通外网访问继续走原生网络，解锁的同时不牺牲速度与延迟。
+不把所有流量塞进 WARP 是刻意的取舍：YouTube、Google Play 独立 CDN、ChatGPT 与普通外网访问继续走原生网络，解锁的同时不牺牲速度与延迟。
 
 安装、切换、验收、回滚全自动：改动前先备份，配置先过语法检查再重启，端到端验收失败自动恢复原状。
 
@@ -19,7 +19,7 @@
 ## ✨ 核心特性
 
 - 🌍 **IPv4 机房也能拿到 IPv6 出口**：出口协议族由 Cloudflare 在隧道内部决定，本项目借助官方客户端的 MASQUE 隧道，让只有 IPv4 的 VPS 也能以 IPv6 出口访问 Google，绕开被 Google 锁定的 IPv4 段。这是本项目与常见方案最大的差别，实测记录见「兼容性与验证」。
-- 🎯 **最小域名集合**：只分流 Google 搜索/核心基础与 Google AI 的根域名，其余域名一律直连。
+- 🎯 **最小域名集合**：只分流 Google 搜索/核心基础、Google AI、Claude/Anthropic 与 Muse AI 的根域名，其余域名一律直连。
 - ⚡ **MASQUE 出口更干净**：官方客户端走 443 端口的 QUIC 通道，由 Cloudflare 自行调度边缘与会话，比依赖固定 Anycast 接入点的 WireGuard 类方案更容易落到 Google 判定为干净的出口池。
 - 🧠 **拒绝“HTTP 200 即解锁”**：同时校验 `warp=on`、Google 页面内部地区码（不能是 `CHN` / `HKG`）、Gemini 与 AI Studio 的地区限制文案，四项全过才算成功。
 - 🔁 **保留注册的出口刷新**：已有官方 WARP 注册先做验收，不合格就断线重连换出口，不删除设备；只注销本次新建且未通过验收的候选注册。
@@ -36,12 +36,12 @@
 客户端（vless / vmess / hysteria2 / tuic / anytls 等入站）
         │
         ▼
-     sing-box ── 命中 google.com、gemini 等域名 ──► SOCKS5 127.0.0.1:40000
+     sing-box ── 命中 Google、Gemini、Claude、Anthropic、Muse AI 等域名 ──► SOCKS5 127.0.0.1:40000
         │                                                    │
         │                                            官方 cloudflare-warp
         │                                          （MASQUE / QUIC over 443）
         ▼                                                    │
-  其他域名 ──► VPS 原生出口                             Cloudflare WARP ──► Google
+  其他域名 ──► VPS 原生出口                         Cloudflare WARP ──► 目标服务
 ```
 
 1. 安装官方 `cloudflare-warp` 客户端，切换为 **MASQUE + 仅监听本机的 SOCKS5 代理**模式。
@@ -146,8 +146,9 @@ sing-box 使用**根域名后缀规则**，命中某个根域名后，它的所�
 | **Google 搜索与核心基础** | 搜索主站、前端静态资源、API 总线、CDN 与骨干节点；`google.com` 同时覆盖 `gemini.google.com`、`aistudio.google.com`、`bard.google.com` 等子域 | `google.com`<br>`googleapis.com`<br>`googleusercontent.com`<br>`gstatic.com`<br>`1e100.net`<br>`google-analytics.com`<br>`googletagmanager.com`<br>`goo.gl`<br>`google.dev`<br>`web.dev`<br>`chrome.com` |
 | **亚太防跳转域名** | 出口被判定为受限地区时，Google 常把请求改址到这些地区站；一并分流可避免跳转后落回受限地区 | `google.co.jp`<br>`google.com.hk`<br>`google.com.tw`<br>`google.cn` |
 | **Google AI 与 DeepMind** | Gemini 生态工具、NotebookLM、Generative AI 入口与 DeepMind 独立域名 | `antigravity.google`<br>`notebooklm.google`<br>`generativeai.google`<br>`deepmind.com`<br>`deepmind.google` |
+| **Claude / Anthropic 与 Muse AI** | Claude、Anthropic 及 Muse AI 的目标域名 | `claude.ai`<br>`anthropic.com`<br>`muse.ai` |
 | **验收期临时域名** | 只在安装 / 接入阶段临时加入，用于确认请求确实走到 WARP，验收通过后自动移除 | `www.cloudflare.com` |
-| **不纳入分流** | 保持 VPS 原生直连 | `youtube.com`<br>`googlevideo.com`<br>`ytimg.com`<br>`gvt1.com`<br>`ggpht.com`<br>`chatgpt.com`<br>`openai.com`<br>`claude.ai`<br>`anthropic.com` |
+| **不纳入分流** | 保持 VPS 原生直连 | `youtube.com`<br>`googlevideo.com`<br>`ytimg.com`<br>`gvt1.com`<br>`ggpht.com`<br>`chatgpt.com`<br>`openai.com` |
 
 需要扩展时，直接在 sing-box 里自行添加域名规则即可；脚本只管理自己写入的 `warp-masque` 出站与规则，不会覆盖其他规则。
 
@@ -161,6 +162,8 @@ sing-box 使用**根域名后缀规则**，命中某个根域名后，它的所�
 2. Google 搜索必须 HTTP 200，不跳转 `/sorry/` 或 `google.com.hk`，页面内部地区码必须存在且不是 `CHN`、`HKG`。
 3. Gemini 必须 HTTP 200，且不出现地区限制文案或 `BardErrorInfo 1060`。
 4. AI Studio 必须 HTTP 200，且不出现地区限制文案。
+
+Claude/Anthropic 与 Muse AI 域名也会写入 sing-box 分流规则；内置严格出口验收仍检查 Google 搜索、Gemini 与 AI Studio，不判断这些服务页面是否可用。
 
 刷新出口时每一轮都会重跑这四项；首次安装若轮换全部失败，会自动执行本次备份的 `restore.sh`，避免把服务器留在坏出口上。
 
@@ -291,9 +294,9 @@ Google 判定地区看的是访问出口 IP：很多机房的 IPv4 段被判定�
 
 在菜单选择 **`[2]`**。刷新是保留官方注册的重连换 IP，不会删除你的设备；只有首次安装时本次新建且未通过验收的候选注册才会被注销。想加大尝试次数：`WARP_MAX_RETRIES=20 bash warp-geimini-masque.sh refresh`（上限 30）。
 
-### Q: 为什么不把 YouTube、Google Play、ChatGPT、Claude 一起送进 WARP？
+### Q: 为什么不把 YouTube、Google Play、ChatGPT 一起送进 WARP？
 
-本项目刻意只做最小集合，让这些域名继续走 VPS 原生网络，换来原生速度、更低延迟，以及更少的域名被牵连进 WARP 出口。需要扩展时，请在 sing-box 配置里自行添加域名规则——脚本只管理自己写入的 `warp-masque` 规则，不会覆盖你的其他规则。
+本项目刻意只做最小集合：Google、Claude/Anthropic 与 Muse AI 域名按上表分流；YouTube、Google Play 与 ChatGPT 等未列出的域名继续走 VPS 原生网络，换来原生速度、更低延迟，以及更少的域名被牵连进 WARP 出口。需要扩展时，请在 sing-box 配置里自行添加域名规则——脚本只管理自己写入的 `warp-masque` 规则，不会覆盖你的其他规则。
 
 ### Q: 会不会把自己 SSH 锁在门外？会不会影响 VPS 上的其他代理？
 
